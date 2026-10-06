@@ -2,7 +2,7 @@
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
   "extends": ["config:recommended", "helpers:pinGitHubActionDigests"],
 
-  "enabledManagers": ["custom.regex", "github-actions"],
+  "enabledManagers": ["custom.regex", "dockerfile", "github-actions"],
 
   "semanticCommits": "disabled",
   "labels": ["dependencies"],
@@ -41,7 +41,7 @@
     },
     {
       "description": "Updates to the example app need a version bump and a changelog entry, which Renovate can't write",
-      "matchManagers": ["custom.regex"],
+      "matchFileNames": ["example/**"],
       "prBodyNotes": [
         "Before merging, bump `version` in `example/config.yaml` and add a matching entry to `example/CHANGELOG.md`."
       ]
