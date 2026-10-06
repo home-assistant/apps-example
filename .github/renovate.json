@@ -1,0 +1,50 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": ["config:recommended", "helpers:pinGitHubActionDigests"],
+
+  "enabledManagers": ["custom.regex", "dockerfile", "github-actions"],
+
+  "semanticCommits": "disabled",
+  "labels": ["dependencies"],
+
+  "customManagers": [
+    {
+      "customType": "regex",
+      "description": "tempio in the example app",
+      "managerFilePatterns": ["/^example/Dockerfile$/"],
+      "matchStrings": ["ARG TEMPIO_VERSION=(?<currentValue>\\S+)"],
+      "depNameTemplate": "home-assistant/tempio",
+      "datasourceTemplate": "github-releases",
+      "versioningTemplate": "loose"
+    }
+  ],
+
+  "packageRules": [
+    {
+      "description": "GitHub Actions: weekly, like Dependabot did",
+      "matchManagers": ["github-actions"],
+      "addLabels": ["github_actions"],
+      "schedule": ["before 8am on monday"]
+    },
+    {
+      "description": "Leave runner labels and action version inputs alone, Dependabot never updated those",
+      "matchManagers": ["github-actions"],
+      "matchDepTypes": ["github-runner", "uses-with"],
+      "enabled": false
+    },
+    {
+      "description": "Our own actions that follow a branch (like home-assistant/actions@master) float on purpose. Pinning them would open a digest PR in every repository for each change to them. Our own actions on a version tag are pinned like any other.",
+      "matchManagers": ["github-actions"],
+      "matchPackageNames": ["home-assistant/**"],
+      "matchCurrentValue": "/^(dev|main|master)$/",
+      "pinDigests": false
+    },
+    {
+      "description": "Updates to the example app need a version bump and a changelog entry, which Renovate can't write",
+      "matchFileNames": ["example/**"],
+      "prBodyNotes": [
+        "Before merging, bump `version` in `example/config.yaml` and add a matching entry to `example/CHANGELOG.md`."
+      ]
+    }
+  ]
+}
