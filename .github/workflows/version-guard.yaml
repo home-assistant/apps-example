@@ -1,0 +1,164 @@
+name: Version guard
+
+# The Supervisor detects app updates by comparing the `version` string in the
+# app's config against the installed version - the container image is
+# published under exactly that version as its image tag. A change to
+# device-visible app files without a version bump therefore ships to nobody:
+# existing installs never see it, and the already-published version tag gets
+# silently repointed, so "the same version" means different images depending
+# on install time. This workflow fails when device-visible files changed
+# without a bump.
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  version-guard:
+    name: Device-visible app changes require a version bump
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out the repository (full history)
+        uses: actions/checkout@v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Guard version bumps
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          # pull_request: the merge base of the PR; push: the previous tip of
+          # the pushed branch (the whole push range is guarded)
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+          # the checked-out revision: PRs check out the merge ref, so this is
+          # always present in the object store
+          HEAD_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+
+          # Device-visible app artifacts: image content (rootfs, Dockerfile) and
+          # app data that installed users only receive via an app update
+          # (config.yaml schema/defaults, AppArmor profile, translations - the
+          # Supervisor snapshots these into the installed app at install and
+          # update time, supervisor apps/app.py App.data). Docs (DOCS.md,
+          # README.md, CHANGELOG.md) are deliberately excluded: they are
+          # served from the store source folder and refreshed by store
+          # refresh, so they reach users without an app update. config.yaml
+          # is both trigger and fix: any change to it needs a version bump
+          # (the image is tagged with exactly that version, and the bump is
+          # what refreshes the snapshot for installed apps).
+          is_device_visible() { # is_device_visible <repo-relative path> <app dir>
+            local rel="$1" app="$2" sub
+            sub="${rel#"$app"/}"
+            [ "$sub" != "$rel" ] || return 1 # not inside the app dir
+            case "$sub" in
+              rootfs | rootfs/* | Dockerfile | Dockerfile.* | apparmor.txt)
+                return 0
+                ;;
+              translations | translations/* | config.yaml | config.yml | config.json)
+                return 0
+                ;;
+              *) return 1 ;;
+            esac
+          }
+
+          # version_at <git-rev> <app dir>: the app's version at a revision
+          # (all three config filename variants HA supports are handled)
+          version_at() {
+            local f
+            for f in config.yaml config.yml config.json; do
+              if git cat-file -e "$1:$2/$f" 2>/dev/null; then
+                git show "$1:$2/$f" \
+                  | sed -n -E 's/^[[:space:]]*"?version"?:[[:space:]]*"?([^",]*)"?,?[[:space:]]*$/\1/p' \
+                  | head -n 1
+                break
+              fi
+            done
+            return 0
+          }
+
+          case "$EVENT_NAME" in
+            pull_request | push) ;;
+            *) echo "version-guard: unsupported event '$EVENT_NAME' - skipping"; exit 0 ;;
+          esac
+          if [ -z "$BASE_SHA" ] || [ "$BASE_SHA" = "0000000000000000000000000000000000000000" ]; then
+            echo "version-guard: no base revision (new branch or force push) - skipping"
+            exit 0
+          fi
+          if ! git cat-file -e "$BASE_SHA" 2>/dev/null; then
+            echo "version-guard: base revision $BASE_SHA not present in this checkout - skipping"
+            exit 0
+          fi
+
+          # App directories at the head revision: top-level dirs containing an
+          # app config file (the same discovery rule the HA tooling applies)
+          appdirs=()
+          while IFS= read -r entry; do
+            for f in config.yaml config.yml config.json; do
+              if git cat-file -e "$HEAD_SHA:$entry/$f" 2>/dev/null; then
+                appdirs+=("$entry")
+                break
+              fi
+            done
+          done < <(git ls-tree --name-only "$HEAD_SHA")
+
+          if [ "${#appdirs[@]}" -eq 0 ]; then
+            echo "version-guard: no apps found - nothing to guard"
+            exit 0
+          fi
+
+          fails=0
+          for app in "${appdirs[@]}"; do
+            changed="$(git diff --name-only "$BASE_SHA" "$HEAD_SHA" -- "$app" || true)"
+            [ -n "$changed" ] || continue
+
+            triggering=""
+            while IFS= read -r f; do
+              [ -n "$f" ] || continue
+              if is_device_visible "$f" "$app"; then
+                triggering+="${f}"$'\n'
+              fi
+            done <<<"$changed"
+            [ -n "$triggering" ] || continue
+
+            vbase="$(version_at "$BASE_SHA" "$app")"
+            vhead="$(version_at "$HEAD_SHA" "$app")"
+
+            if [ -z "$vbase" ]; then
+              echo "version-guard: new app '$app' - ok"
+              continue
+            fi
+            if [ -z "$vhead" ]; then
+              echo "version-guard: ERROR: app '$app' has no version in its config (required)" >&2
+              fails=$((fails + 1))
+              continue
+            fi
+            if [ "$vbase" = "$vhead" ]; then
+              {
+                echo "version-guard: ERROR: app '$app' changed device-visible files without a version bump:"
+                echo "  (version unchanged: $vbase -> $vhead); triggering files:"
+                while IFS= read -r f; do
+                  if [ -n "$f" ]; then echo "  $f"; fi
+                done <<<"$triggering"
+                echo "  The Supervisor only detects app updates by comparing the version string in"
+                echo "  the app config; images are published under that version as the image tag."
+                echo "  Without a bump this change ships to nobody (existing installs never see it)"
+                echo "  and silently repoints an already-published version tag, so 'the same version'"
+                echo "  means different images depending on install time."
+                echo "  Fix: bump 'version' in $app/config.yaml and describe the change in $app/CHANGELOG.md."
+              } >&2
+              fails=$((fails + 1))
+            else
+              echo "version-guard: '$app' $vbase -> $vhead (device-visible changes) - ok"
+            fi
+          done
+
+          if [ "$fails" -gt 0 ]; then
+            echo "version-guard: $fails app(s) need a version bump" >&2
+            exit 1
+          fi
+          echo "version-guard: OK"
