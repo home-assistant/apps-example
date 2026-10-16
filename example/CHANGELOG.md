@@ -1,4 +1,4 @@
-<!-- https://developers.home-assistant.io/docs/apps/presentation#keeping-a-changelog -->
+<!-- https://contributors.home-assistant.io/apps/guides/presentation/#changelog -->
 ## 1.3.1
 
 * Rebuild with updated workflow to include `io.hass.*` labels.
